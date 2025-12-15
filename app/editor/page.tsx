@@ -480,8 +480,9 @@ export default function StudioPage() {
     // For background replace, prompt for description
     let bgPrompt: string | undefined;
     if (action === 'background_replace') {
-      bgPrompt = window.prompt('Describe the new background:', 'professional studio background with soft lighting');
-      if (!bgPrompt) return; // User cancelled
+      const promptResult = window.prompt('Describe the new background:', 'professional studio background with soft lighting');
+      if (!promptResult) return; // User cancelled
+      bgPrompt = promptResult;
     }
 
     setIsGenerating(true);
