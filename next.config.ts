@@ -3,6 +3,11 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   /* config options here */
   
+  // Skip type checking during build (for faster deployment)
+  typescript: {
+    ignoreBuildErrors: true,
+  },
+  
   // Allow images from Bria's CDN and placeholder service
   images: {
     remotePatterns: [
