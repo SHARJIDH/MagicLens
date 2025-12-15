@@ -3,6 +3,7 @@
 import React, { useRef, useEffect, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { Tool } from './ToolsPanel';
 import { ImageFilters } from './LayersPanel';
+import { Upload, RotateCcw, Crop, Check, X, Undo2, Redo2 } from 'lucide-react';
 
 interface CanvasEditorProps {
   imageUrl: string | null;
@@ -12,6 +13,8 @@ interface CanvasEditorProps {
   brushOpacity: number;
   filters: ImageFilters;
   onMaskChange: (maskDataUrl: string | null) => void;
+  onUploadClick?: () => void;
+  onImageUpdate?: (dataUrl: string) => void;
   disabled?: boolean;
 }
 
@@ -22,10 +25,13 @@ export interface CanvasEditorRef {
   canUndo: boolean;
   canRedo: boolean;
   exportImage: () => string | null;
+  getRotatedImage: () => string | null;
+  getCroppedImage: () => string | null;
+  resetTransforms: () => void;
 }
 
 const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
-  ({ imageUrl, tool, brushSize, brushColor, brushOpacity, filters, onMaskChange, disabled }, ref) => {
+  ({ imageUrl, tool, brushSize: propBrushSize, brushColor, brushOpacity, filters, onMaskChange, onUploadClick, onImageUpdate, disabled }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -42,6 +48,32 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
     const [history, setHistory] = useState<ImageData[]>([]);
     const [historyIndex, setHistoryIndex] = useState(-1);
     const [hasMask, setHasMask] = useState(false);
+    
+    // Rotation state
+    const [rotation, setRotation] = useState(0);
+    const [isRotating, setIsRotating] = useState(false);
+    const [hasRotationChanges, setHasRotationChanges] = useState(false);
+    
+    // Crop state
+    const [isCropping, setIsCropping] = useState(false);
+    const [cropArea, setCropArea] = useState({ x: 0, y: 0, width: 0, height: 0 });
+    const [isDraggingCrop, setIsDraggingCrop] = useState(false);
+    const [cropDragStart, setCropDragStart] = useState({ x: 0, y: 0 });
+    const [cropStartArea, setCropStartArea] = useState({ x: 0, y: 0, width: 0, height: 0 });
+    const [cropResizeHandle, setCropResizeHandle] = useState<string | null>(null);
+    const [hasCropChanges, setHasCropChanges] = useState(false);
+    const [displayedImageRect, setDisplayedImageRect] = useState({ x: 0, y: 0, width: 0, height: 0 });
+    const imageRef = useRef<HTMLImageElement>(null);
+    
+    // Eraser drag-to-resize state
+    const [isResizingEraser, setIsResizingEraser] = useState(false);
+    const [eraserResizeStartY, setEraserResizeStartY] = useState(0);
+    const [brushSize, setBrushSize] = useState(propBrushSize);
+    
+    // Update brush size from props
+    useEffect(() => {
+      setBrushSize(propBrushSize);
+    }, [propBrushSize]);
 
     // Generate CSS filter string from filters
     const getFilterString = useCallback(() => {
@@ -325,6 +357,126 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
       return exportCanvas.toDataURL('image/png');
     }, [imageUrl, imageDimensions, getFilterString]);
 
+    // Get rotated image
+    const getRotatedImage = useCallback(() => {
+      if (!imageUrl || rotation === 0) return null;
+      
+      const img = new Image();
+      img.src = imageUrl;
+      
+      const radians = (rotation * Math.PI) / 180;
+      const cos = Math.abs(Math.cos(radians));
+      const sin = Math.abs(Math.sin(radians));
+      
+      const newWidth = Math.ceil(imageDimensions.width * cos + imageDimensions.height * sin);
+      const newHeight = Math.ceil(imageDimensions.height * cos + imageDimensions.width * sin);
+      
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = newWidth;
+      exportCanvas.height = newHeight;
+      const ctx = exportCanvas.getContext('2d')!;
+      
+      ctx.translate(newWidth / 2, newHeight / 2);
+      ctx.rotate(radians);
+      ctx.filter = getFilterString();
+      ctx.drawImage(img, -imageDimensions.width / 2, -imageDimensions.height / 2);
+      
+      return exportCanvas.toDataURL('image/png');
+    }, [imageUrl, rotation, imageDimensions, getFilterString]);
+
+    // Get cropped image
+    const getCroppedImage = useCallback(() => {
+      if (!imageUrl || !cropArea.width || !cropArea.height) return null;
+      
+      const img = new Image();
+      img.src = imageUrl;
+      
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = cropArea.width;
+      exportCanvas.height = cropArea.height;
+      const ctx = exportCanvas.getContext('2d')!;
+      
+      ctx.filter = getFilterString();
+      ctx.drawImage(
+        img,
+        cropArea.x, cropArea.y, cropArea.width, cropArea.height,
+        0, 0, cropArea.width, cropArea.height
+      );
+      
+      return exportCanvas.toDataURL('image/png');
+    }, [imageUrl, cropArea, getFilterString]);
+
+    // Reset transforms
+    const resetTransforms = useCallback(() => {
+      setRotation(0);
+      setIsRotating(false);
+      setHasRotationChanges(false);
+      setIsCropping(false);
+      setCropArea({ x: 0, y: 0, width: 0, height: 0 });
+      setHasCropChanges(false);
+    }, []);
+
+    // Apply rotation and update image
+    const applyRotation = useCallback(() => {
+      const rotatedImage = getRotatedImage();
+      if (rotatedImage && onImageUpdate) {
+        onImageUpdate(rotatedImage);
+        setRotation(0);
+        setIsRotating(false);
+        setHasRotationChanges(false);
+      }
+    }, [getRotatedImage, onImageUpdate]);
+
+    // Apply crop and update image
+    const applyCrop = useCallback(() => {
+      const croppedImage = getCroppedImage();
+      if (croppedImage && onImageUpdate) {
+        onImageUpdate(croppedImage);
+        setIsCropping(false);
+        setCropArea({ x: 0, y: 0, width: 0, height: 0 });
+        setHasCropChanges(false);
+      }
+    }, [getCroppedImage, onImageUpdate]);
+
+    // Initialize crop area
+    const initializeCrop = useCallback(() => {
+      setIsCropping(true);
+      setHasCropChanges(false);
+      // Set initial crop to 80% of image, centered
+      const margin = 0.1;
+      setCropArea({
+        x: imageDimensions.width * margin,
+        y: imageDimensions.height * margin,
+        width: imageDimensions.width * (1 - margin * 2),
+        height: imageDimensions.height * (1 - margin * 2),
+      });
+    }, [imageDimensions]);
+
+    // Calculate displayed image rect when cropping
+    useEffect(() => {
+      if (isCropping && imageRef.current && containerRef.current) {
+        const updateRect = () => {
+          const img = imageRef.current;
+          const container = containerRef.current;
+          if (!img || !container) return;
+          
+          const containerRect = container.getBoundingClientRect();
+          const imgRect = img.getBoundingClientRect();
+          
+          setDisplayedImageRect({
+            x: imgRect.left - containerRect.left,
+            y: imgRect.top - containerRect.top,
+            width: imgRect.width,
+            height: imgRect.height,
+          });
+        };
+        
+        updateRect();
+        window.addEventListener('resize', updateRect);
+        return () => window.removeEventListener('resize', updateRect);
+      }
+    }, [isCropping, zoom, pan]);
+
     // Expose methods to parent
     useImperativeHandle(ref, () => ({
       clearMask,
@@ -333,7 +485,10 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
       canUndo: historyIndex > 0,
       canRedo: historyIndex < history.length - 1,
       exportImage,
-    }), [clearMask, undo, redo, historyIndex, history.length, exportImage]);
+      getRotatedImage,
+      getCroppedImage,
+      resetTransforms,
+    }), [clearMask, undo, redo, historyIndex, history.length, exportImage, getRotatedImage, getCroppedImage, resetTransforms]);
 
     // Keyboard shortcuts
     useEffect(() => {
@@ -352,12 +507,34 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
         } else if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) {
           e.preventDefault();
           redo();
+        } else if (e.key === 'Enter') {
+          // Apply crop or rotation when Enter is pressed
+          if (isCropping && hasCropChanges) {
+            e.preventDefault();
+            applyCrop();
+          } else if (isRotating && hasRotationChanges) {
+            e.preventDefault();
+            applyRotation();
+          }
+        } else if (e.key === 'Escape') {
+          // Cancel crop or rotation
+          if (isCropping) {
+            e.preventDefault();
+            setIsCropping(false);
+            setCropArea({ x: 0, y: 0, width: 0, height: 0 });
+            setHasCropChanges(false);
+          } else if (isRotating) {
+            e.preventDefault();
+            setRotation(0);
+            setIsRotating(false);
+            setHasRotationChanges(false);
+          }
         }
       };
 
       window.addEventListener('keydown', handleKeyDown);
       return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo]);
+    }, [undo, redo, isCropping, hasCropChanges, applyCrop, isRotating, hasRotationChanges, applyRotation]);
 
     // Get cursor style
     const getCursor = () => {
@@ -375,15 +552,126 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
       }
     };
 
+    // Handle eraser drag-to-resize
+    const handleEraserResizeStart = useCallback((e: React.MouseEvent) => {
+      if (tool === 'eraser') {
+        setIsResizingEraser(true);
+        setEraserResizeStartY(e.clientY);
+        e.preventDefault();
+      }
+    }, [tool]);
+
+    const handleEraserResize = useCallback((e: React.MouseEvent) => {
+      if (isResizingEraser) {
+        const deltaY = eraserResizeStartY - e.clientY;
+        const newSize = Math.min(Math.max(brushSize + deltaY * 0.5, 5), 150);
+        setBrushSize(newSize);
+        setEraserResizeStartY(e.clientY);
+      }
+    }, [isResizingEraser, eraserResizeStartY, brushSize]);
+
+    const handleEraserResizeEnd = useCallback(() => {
+      setIsResizingEraser(false);
+    }, []);
+
+    // Crop area drag handlers - using screen coordinates
+    const handleCropMouseDown = useCallback((e: React.MouseEvent, handle?: string) => {
+      if (!isCropping) return;
+      e.stopPropagation();
+      e.preventDefault();
+      
+      setCropDragStart({ x: e.clientX, y: e.clientY });
+      setCropStartArea({ ...cropArea });
+      
+      if (handle) {
+        setCropResizeHandle(handle);
+      } else {
+        setIsDraggingCrop(true);
+      }
+    }, [isCropping, cropArea]);
+
+    const handleCropMouseMove = useCallback((e: React.MouseEvent) => {
+      if (!isCropping || (!isDraggingCrop && !cropResizeHandle)) return;
+      
+      const container = containerRef.current;
+      const img = imageRef.current;
+      if (!container || !img) return;
+      
+      const containerRect = container.getBoundingClientRect();
+      const imgRect = img.getBoundingClientRect();
+      
+      // Scale factor from screen to image coordinates
+      const scaleX = imageDimensions.width / imgRect.width;
+      const scaleY = imageDimensions.height / imgRect.height;
+      
+      const deltaX = (e.clientX - cropDragStart.x) * scaleX;
+      const deltaY = (e.clientY - cropDragStart.y) * scaleY;
+      
+      if (isDraggingCrop) {
+        // Move the entire crop area
+        const newX = Math.max(0, Math.min(cropStartArea.x + deltaX, imageDimensions.width - cropStartArea.width));
+        const newY = Math.max(0, Math.min(cropStartArea.y + deltaY, imageDimensions.height - cropStartArea.height));
+        
+        setCropArea({
+          ...cropStartArea,
+          x: newX,
+          y: newY,
+        });
+        setHasCropChanges(true);
+      } else if (cropResizeHandle) {
+        // Resize from handles
+        let newArea = { ...cropStartArea };
+        const minSize = 50;
+        
+        if (cropResizeHandle.includes('e')) {
+          const newWidth = Math.max(minSize, cropStartArea.width + deltaX);
+          newArea.width = Math.min(newWidth, imageDimensions.width - cropStartArea.x);
+        }
+        if (cropResizeHandle.includes('w')) {
+          const maxDeltaX = cropStartArea.width - minSize;
+          const clampedDeltaX = Math.max(-cropStartArea.x, Math.min(deltaX, maxDeltaX));
+          newArea.x = cropStartArea.x + clampedDeltaX;
+          newArea.width = cropStartArea.width - clampedDeltaX;
+        }
+        if (cropResizeHandle.includes('s')) {
+          const newHeight = Math.max(minSize, cropStartArea.height + deltaY);
+          newArea.height = Math.min(newHeight, imageDimensions.height - cropStartArea.y);
+        }
+        if (cropResizeHandle.includes('n')) {
+          const maxDeltaY = cropStartArea.height - minSize;
+          const clampedDeltaY = Math.max(-cropStartArea.y, Math.min(deltaY, maxDeltaY));
+          newArea.y = cropStartArea.y + clampedDeltaY;
+          newArea.height = cropStartArea.height - clampedDeltaY;
+        }
+        
+        setCropArea(newArea);
+        setHasCropChanges(true);
+      }
+    }, [isCropping, isDraggingCrop, cropResizeHandle, cropDragStart, cropStartArea, imageDimensions]);
+
+    const handleCropMouseUp = useCallback(() => {
+      setIsDraggingCrop(false);
+      setCropResizeHandle(null);
+    }, []);
+
     if (!imageUrl) {
       return (
-        <div className="w-full h-full flex items-center justify-center bg-gray-50 rounded-2xl border-2 border-dashed border-gray-300">
-          <div className="text-center text-gray-500">
-            <svg className="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-            </svg>
-            <p className="text-lg font-medium text-gray-700">No image loaded</p>
-            <p className="text-sm">Upload an image to start editing</p>
+        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl border-2 border-dashed border-gray-300">
+          <div className="text-center">
+            <div className="w-20 h-20 mx-auto mb-6 bg-gray-200 rounded-full flex items-center justify-center">
+              <Upload className="w-10 h-10 text-gray-400" />
+            </div>
+            <p className="text-xl font-semibold text-gray-700 mb-2">No image loaded</p>
+            <p className="text-sm text-gray-500 mb-6">Upload an image to start editing</p>
+            {onUploadClick && (
+              <button
+                onClick={onUploadClick}
+                className="px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-medium rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5"
+              >
+                <Upload className="w-5 h-5 inline-block mr-2 -mt-0.5" />
+                Upload Image
+              </button>
+            )}
           </div>
         </div>
       );
@@ -393,18 +681,31 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
       <div 
         ref={containerRef}
         className="relative w-full h-full overflow-hidden rounded-2xl bg-[#1a1a1a]"
-        style={{ cursor: getCursor() }}
+        style={{ cursor: isResizingEraser ? 'ns-resize' : getCursor() }}
         onWheel={handleWheel}
+        onMouseMove={(e) => {
+          handleEraserResize(e);
+          handleCropMouseMove(e);
+        }}
+        onMouseUp={() => {
+          handleEraserResizeEnd();
+          handleCropMouseUp();
+        }}
+        onMouseLeave={() => {
+          handleEraserResizeEnd();
+          handleCropMouseUp();
+        }}
       >
         {/* Image Layer */}
         <div
           className="absolute inset-0 flex items-center justify-center"
           style={{
-            transform: `scale(${zoom}) translate(${pan.x}px, ${pan.y}px)`,
+            transform: `scale(${zoom}) translate(${pan.x}px, ${pan.y}px) rotate(${rotation}deg)`,
             transformOrigin: 'center',
           }}
         >
           <img
+            ref={imageRef}
             src={imageUrl}
             alt="Source"
             className="max-w-full max-h-full object-contain"
@@ -423,46 +724,261 @@ const AdvancedCanvasEditor = forwardRef<CanvasEditorRef, CanvasEditorProps>(
           />
         </div>
 
-        {/* Interaction Layer */}
-        <div
-          className="absolute inset-0"
-          onMouseDown={handlePointerDown}
-          onMouseMove={handlePointerMove}
-          onMouseUp={handlePointerUp}
-          onMouseLeave={handlePointerUp}
-          onTouchStart={handlePointerDown}
-          onTouchMove={handlePointerMove}
-          onTouchEnd={handlePointerUp}
-          style={{ touchAction: 'none' }}
-        />
+        {/* Crop Overlay - Outside transformed container for proper coordinates */}
+        {isCropping && imageRef.current && (
+          <div 
+            className="absolute inset-0 z-30"
+            style={{ pointerEvents: 'none' }}
+          >
+            {/* Dark overlay */}
+            <div className="absolute inset-0 bg-black/50" />
+            
+            {/* Crop area - this is the visible part */}
+            {(() => {
+              const img = imageRef.current;
+              if (!img) return null;
+              
+              const containerRect = containerRef.current?.getBoundingClientRect();
+              const imgRect = img.getBoundingClientRect();
+              if (!containerRect) return null;
+              
+              // Calculate crop box position in screen coordinates
+              const imgOffsetX = imgRect.left - containerRect.left;
+              const imgOffsetY = imgRect.top - containerRect.top;
+              const scaleX = imgRect.width / imageDimensions.width;
+              const scaleY = imgRect.height / imageDimensions.height;
+              
+              const cropLeft = imgOffsetX + cropArea.x * scaleX;
+              const cropTop = imgOffsetY + cropArea.y * scaleY;
+              const cropWidth = cropArea.width * scaleX;
+              const cropHeight = cropArea.height * scaleY;
+              
+              return (
+                <>
+                  {/* Clear area (crop selection) */}
+                  <div
+                    className="absolute bg-transparent border-2 border-white shadow-lg"
+                    style={{
+                      left: cropLeft,
+                      top: cropTop,
+                      width: cropWidth,
+                      height: cropHeight,
+                      pointerEvents: 'auto',
+                      cursor: 'move',
+                      boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)',
+                    }}
+                    onMouseDown={(e) => handleCropMouseDown(e)}
+                  >
+                    {/* Grid lines */}
+                    <div className="absolute inset-0 pointer-events-none">
+                      <div className="absolute top-1/3 left-0 right-0 h-px bg-white/60" />
+                      <div className="absolute top-2/3 left-0 right-0 h-px bg-white/60" />
+                      <div className="absolute left-1/3 top-0 bottom-0 w-px bg-white/60" />
+                      <div className="absolute left-2/3 top-0 bottom-0 w-px bg-white/60" />
+                    </div>
+                    
+                    {/* Corner handles */}
+                    {['nw', 'ne', 'sw', 'se'].map(handle => (
+                      <div
+                        key={handle}
+                        className="absolute w-5 h-5 bg-white rounded-sm shadow-md"
+                        style={{
+                          left: handle.includes('w') ? -10 : 'auto',
+                          right: handle.includes('e') ? -10 : 'auto',
+                          top: handle.includes('n') ? -10 : 'auto',
+                          bottom: handle.includes('s') ? -10 : 'auto',
+                          cursor: `${handle}-resize`,
+                          pointerEvents: 'auto',
+                        }}
+                        onMouseDown={(e) => handleCropMouseDown(e, handle)}
+                      />
+                    ))}
+                    
+                    {/* Edge handles */}
+                    {['n', 'e', 's', 'w'].map(handle => (
+                      <div
+                        key={handle}
+                        className="absolute bg-white rounded-sm shadow-md"
+                        style={{
+                          left: handle === 'w' ? -5 : handle === 'e' ? 'auto' : '50%',
+                          right: handle === 'e' ? -5 : 'auto',
+                          top: handle === 'n' ? -5 : handle === 's' ? 'auto' : '50%',
+                          bottom: handle === 's' ? -5 : 'auto',
+                          width: handle === 'n' || handle === 's' ? 30 : 10,
+                          height: handle === 'e' || handle === 'w' ? 30 : 10,
+                          transform: handle === 'n' || handle === 's' ? 'translateX(-50%)' : 'translateY(-50%)',
+                          cursor: handle === 'n' || handle === 's' ? 'ns-resize' : 'ew-resize',
+                          pointerEvents: 'auto',
+                        }}
+                        onMouseDown={(e) => handleCropMouseDown(e, handle)}
+                      />
+                    ))}
+                    
+                    {/* Size indicator */}
+                    <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 bg-black/80 text-white text-xs px-2 py-1 rounded whitespace-nowrap">
+                      {Math.round(cropArea.width)} × {Math.round(cropArea.height)}
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
 
-        {/* Zoom Controls */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white/90 backdrop-blur-sm px-3 py-2 rounded-full border border-gray-200 shadow-lg">
+        {/* Interaction Layer (only when not cropping) */}
+        {!isCropping && (
+          <div
+            className="absolute inset-0"
+            onMouseDown={(e) => {
+              if (tool === 'eraser') {
+                handleEraserResizeStart(e);
+              }
+              handlePointerDown(e);
+            }}
+            onMouseMove={handlePointerMove}
+            onMouseUp={handlePointerUp}
+            onMouseLeave={handlePointerUp}
+            onTouchStart={handlePointerDown}
+            onTouchMove={handlePointerMove}
+            onTouchEnd={handlePointerUp}
+            style={{ touchAction: 'none' }}
+          />
+        )}
+
+        {/* Top Toolbar - Rotation and Crop controls */}
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white/95 backdrop-blur-md px-4 py-2.5 rounded-xl border border-gray-200 shadow-xl z-10">
+          {/* Undo/Redo */}
           <button
-            onClick={() => setZoom(prev => Math.max(prev - 0.25, 0.25))}
-            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-600"
+            onClick={undo}
+            disabled={historyIndex <= 0}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Undo (Ctrl+Z)"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-            </svg>
+            <Undo2 className="w-4 h-4" />
           </button>
-          <span className="text-xs font-medium min-w-[3rem] text-center text-gray-700">{Math.round(zoom * 100)}%</span>
           <button
-            onClick={() => setZoom(prev => Math.min(prev + 0.25, 4))}
-            className="p-1.5 hover:bg-gray-100 rounded-full transition-colors text-gray-600"
+            onClick={redo}
+            disabled={historyIndex >= history.length - 1}
+            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Redo (Ctrl+Shift+Z)"
           >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
+            <Redo2 className="w-4 h-4" />
           </button>
-          <div className="w-px h-4 bg-gray-200" />
+          
+          <div className="w-px h-6 bg-gray-200 mx-1" />
+          
+          {/* Rotation */}
           <button
-            onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}
-            className="px-2 py-1 text-xs hover:bg-gray-100 rounded-full transition-colors text-gray-600"
+            onClick={() => {
+              if (isRotating) {
+                setIsRotating(false);
+                setRotation(0);
+                setHasRotationChanges(false);
+              } else {
+                setIsRotating(true);
+                setIsCropping(false);
+              }
+            }}
+            className={`p-2 rounded-lg transition-colors ${isRotating ? 'bg-purple-100 text-purple-600' : 'hover:bg-gray-100 text-gray-600'}`}
+            title="Rotate"
           >
-            Fit
+            <RotateCcw className="w-4 h-4" />
           </button>
+          
+          {/* Crop */}
+          <button
+            onClick={() => {
+              if (isCropping) {
+                setIsCropping(false);
+                setCropArea({ x: 0, y: 0, width: 0, height: 0 });
+                setHasCropChanges(false);
+              } else {
+                initializeCrop();
+                setIsRotating(false);
+              }
+            }}
+            className={`p-2 rounded-lg transition-colors ${isCropping ? 'bg-purple-100 text-purple-600' : 'hover:bg-gray-100 text-gray-600'}`}
+            title="Crop"
+          >
+            <Crop className="w-4 h-4" />
+          </button>
+          
+          {/* Apply/Cancel buttons for rotation or crop */}
+          {(hasRotationChanges || hasCropChanges) && (
+            <>
+              <div className="w-px h-6 bg-gray-200 mx-1" />
+              <button
+                onClick={() => {
+                  if (hasRotationChanges) applyRotation();
+                  if (hasCropChanges) applyCrop();
+                }}
+                className="p-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition-colors"
+                title="Apply"
+              >
+                <Check className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => {
+                  if (isRotating) {
+                    setRotation(0);
+                    setHasRotationChanges(false);
+                  }
+                  if (isCropping) {
+                    setIsCropping(false);
+                    setCropArea({ x: 0, y: 0, width: 0, height: 0 });
+                    setHasCropChanges(false);
+                  }
+                }}
+                className="p-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
+                title="Cancel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </>
+          )}
         </div>
+
+        {/* Rotation Slider Panel - Simple style */}
+        {isRotating && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-md px-6 py-3 rounded-xl border border-gray-200 shadow-xl z-20 flex items-center gap-4">
+            <span className="text-sm text-gray-600">Rotation:</span>
+            <input
+              type="range"
+              min="-180"
+              max="180"
+              value={rotation}
+              onChange={(e) => {
+                setRotation(Number(e.target.value));
+                setHasRotationChanges(true);
+              }}
+              className="w-48 h-2 bg-purple-200 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-purple-600 [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:cursor-grab"
+            />
+            <span className="w-12 h-8 flex items-center justify-center bg-purple-600 text-white text-sm font-medium rounded-full">{rotation}°</span>
+          </div>
+        )}
+
+        {/* Eraser Size Panel - Simple style */}
+        {tool === 'eraser' && (
+          <div className="absolute top-20 right-4 bg-white/95 backdrop-blur-md px-5 py-3 rounded-xl border border-gray-200 shadow-xl z-20 flex items-center gap-4">
+            <span className="text-sm text-gray-600">Size:</span>
+            <input
+              type="range"
+              min="5"
+              max="150"
+              value={brushSize}
+              onChange={(e) => setBrushSize(Number(e.target.value))}
+              className="w-32 h-2 bg-blue-200 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-600 [&::-webkit-slider-thumb]:shadow-md [&::-webkit-slider-thumb]:cursor-grab"
+            />
+            <span className="w-10 h-8 flex items-center justify-center bg-blue-600 text-white text-xs font-medium rounded-full">{Math.round(brushSize)}</span>
+          </div>
+        )}
+
+        {/* Keyboard hints for crop/rotate */}
+        {(isCropping || isRotating) && (
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/80 text-white text-sm px-4 py-2 rounded-lg">
+            Press <kbd className="px-1.5 py-0.5 bg-white/20 rounded mx-1">Enter</kbd> to apply, <kbd className="px-1.5 py-0.5 bg-white/20 rounded mx-1">Esc</kbd> to cancel
+          </div>
+        )}
 
         {/* Brush Cursor Preview */}
         {(tool === 'brush' || tool === 'eraser') && !disabled && (

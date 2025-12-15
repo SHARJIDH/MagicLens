@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { FIBOParams, GenerateResponse, OperationType } from '../../lib/types';
-import { generateImage } from '../../lib/bria';
+import { 
+  generateImage,
+  removeBackground,
+  blurBackground,
+  replaceBackground,
+  expandImage,
+  upscaleImage,
+  eraseElements,
+  enhanceImage
+} from '../../lib/bria';
 
 /**
  * Image Generation API Route
@@ -10,10 +19,17 @@ import { generateImage } from '../../lib/bria';
  * - inpaint_remove, inpaint_replace, inpaint_add → /gen_fill (requires mask)
  * - generate_new, style_transfer → /image/generate
  * - camera_adjust → /image/generate with camera params
+ * - background_remove → /background/remove
+ * - background_blur → /background/blur
+ * - background_replace → /background/replace
+ * - image_expand → /image/expand
+ * - image_upscale → /image/increase_resolution
+ * - erase_element → /eraser
  */
 
 interface GenerateRequestBody {
   image: string;              // Base64 data URL or raw base64
+  secondImage?: string;       // Second image for combine operation
   mask?: string;              // Base64 mask (white = edit region)
   params: FIBOParams;
   prompt?: string;            // Text prompt for the operation
@@ -23,7 +39,7 @@ interface GenerateRequestBody {
 export async function POST(request: NextRequest) {
   try {
     const body: GenerateRequestBody = await request.json();
-    const { image, mask, params, prompt, operation } = body;
+    const { image, secondImage, mask, params, prompt, operation } = body;
 
     if (!image) {
       return NextResponse.json(
@@ -39,44 +55,98 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate: inpaint operations require a mask - provide helpful guidance
-    const isInpaintOperation = operation && ['inpaint_remove', 'inpaint_replace', 'inpaint_add'].includes(operation);
-    if (isInpaintOperation && !mask) {
-      return NextResponse.json(
-        { 
-          error: 'Please draw on the area you want to edit first! Use the brush tool to mark the region, then try again.',
-          needsMask: true 
-        },
-        { status: 400 }
-      );
-    }
-
     // Get API token from environment
     const apiToken = process.env.BRIA_API_TOKEN;
 
-    // Build prompt based on operation type
-    let effectivePrompt = prompt || '';
-    
-    // For removal operations, use a minimal prompt or empty background
-    if (operation === 'inpaint_remove') {
-      effectivePrompt = prompt || 'empty, background continues naturally';
-    } else if (!effectivePrompt) {
-      effectivePrompt = buildPromptFromParams(params);
-    }
-
     console.log('[Generate] Operation:', operation);
     console.log('[Generate] Has mask:', !!mask);
-    console.log('[Generate] Prompt:', effectivePrompt);
+    console.log('[Generate] Prompt:', prompt);
 
-    // Call FIBO API
-    // bria.ts will route to /gen_fill if mask is present
-    const result = await generateImage(
-      image,
-      mask,
-      params,
-      effectivePrompt,
-      apiToken
-    );
+    let result: GenerateResponse;
+
+    // Route to the appropriate Bria API based on operation type
+    switch (operation) {
+      case 'background_remove':
+        console.log('[Generate] Using background removal API');
+        result = await removeBackground(image, apiToken);
+        break;
+
+      case 'background_blur':
+        console.log('[Generate] Using background blur API');
+        const blurIntensity = params.blur_intensity || 50;
+        result = await blurBackground(image, blurIntensity, apiToken);
+        break;
+
+      case 'background_replace':
+        console.log('[Generate] Using background replace API');
+        const bgPrompt = params.new_background || prompt || 'professional studio background';
+        result = await replaceBackground(image, bgPrompt, apiToken);
+        break;
+
+      case 'image_expand':
+        console.log('[Generate] Using image expansion API');
+        const expandDir = params.expand_direction || 'all';
+        const expandAmt = params.expand_amount || 25;
+        result = await expandImage(image, expandDir, expandAmt, prompt, apiToken);
+        break;
+
+      case 'image_upscale':
+        console.log('[Generate] Using image upscale API');
+        const scaleFactor = params.upscale_factor || 2;
+        result = await upscaleImage(image, scaleFactor, apiToken);
+        break;
+
+      case 'hdr_enhance':
+        console.log('[Generate] Using enhance API for HDR quality');
+        const resolution = params.hdr_resolution || '2MP';
+        result = await enhanceImage(image, resolution, apiToken);
+        break;
+
+      case 'erase_element':
+        if (!mask) {
+          return NextResponse.json(
+            { error: 'Please draw on the element you want to erase first!', needsMask: true },
+            { status: 400 }
+          );
+        }
+        console.log('[Generate] Using eraser API');
+        result = await eraseElements(image, mask, apiToken);
+        break;
+
+      case 'inpaint_remove':
+      case 'inpaint_replace':
+      case 'inpaint_add':
+        // These operations require a mask
+        if (!mask) {
+          return NextResponse.json(
+            { 
+              error: 'Please draw on the area you want to edit first! Use the brush tool to mark the region, then try again.',
+              needsMask: true 
+            },
+            { status: 400 }
+          );
+        }
+        // Fall through to default generation with mask
+        
+      default:
+        // Standard generation with gen_fill (if mask) or text-to-image
+        let effectivePrompt = prompt || '';
+        
+        if (operation === 'inpaint_remove') {
+          effectivePrompt = prompt || 'empty, background continues naturally';
+        } else if (!effectivePrompt) {
+          effectivePrompt = buildPromptFromParams(params);
+        }
+
+        result = await generateImage(
+          image,
+          mask,
+          params,
+          effectivePrompt,
+          apiToken
+        );
+        break;
+    }
 
     return NextResponse.json(result);
 
