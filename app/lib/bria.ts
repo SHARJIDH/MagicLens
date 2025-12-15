@@ -7,6 +7,375 @@ const BRIA_API_BASE = 'https://engine.prod.bria-api.com/v2';
 const BRIA_EDIT_BASE = 'https://engine.prod.bria-api.com/v2/image/edit';
 
 /**
+ * Strip data URL prefix to get raw base64
+ */
+function stripDataUrl(dataUrl: string): string {
+  return dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
+}
+
+/**
+ * Remove background from image
+ * Returns image with transparent background
+ */
+export async function removeBackground(
+  image: string,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/remove_background`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Remove background error:', errorText);
+    throw new Error(`Background removal failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: undefined
+  };
+}
+
+/**
+ * Blur background of image (depth of field effect)
+ */
+export async function blurBackground(
+  image: string,
+  intensity: number = 50,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/blur_background`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      scale: Math.min(5, Math.max(1, Math.round(intensity / 20))), // Convert 0-100 to 1-5 scale
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Blur background error:', errorText);
+    throw new Error(`Background blur failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: undefined
+  };
+}
+
+/**
+ * Replace background with generated one based on prompt
+ */
+export async function replaceBackground(
+  image: string,
+  prompt: string,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/replace_background`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      prompt: prompt,
+      mode: 'high_control',
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Replace background error:', errorText);
+    throw new Error(`Background replace failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: undefined
+  };
+}
+
+/**
+ * Expand image boundaries (outpainting)
+ * Uses aspect_ratio for automatic expansion
+ */
+export async function expandImage(
+  image: string,
+  direction: 'left' | 'right' | 'up' | 'down' | 'all' = 'all',
+  amount: number = 25, // percentage - not used with aspect_ratio mode
+  prompt?: string,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  // Use aspect_ratio based expansion
+  // The API will automatically center the image and expand to fit the ratio
+  // Using standard aspect ratios that work well for expansion
+  let aspectRatio: string;
+  switch (direction) {
+    case 'left':
+    case 'right':
+      aspectRatio = '3:2'; // Wider - more moderate than 16:9
+      break;
+    case 'up':
+    case 'down':
+      aspectRatio = '2:3'; // Taller
+      break;
+    case 'all':
+    default:
+      aspectRatio = '4:3'; // Slightly expand all sides
+      break;
+  }
+  
+  const requestBody: Record<string, unknown> = {
+    image: rawBase64,
+    aspect_ratio: aspectRatio,
+    sync: true
+  };
+  
+  // Only add prompt if provided (API auto-generates one if not provided)
+  if (prompt && prompt.trim()) {
+    requestBody.prompt = prompt;
+  }
+  
+  console.log('Expand request - aspect_ratio:', aspectRatio);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/expand`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify(requestBody)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Expand error:', errorText);
+    
+    // If the error is about canvas size, provide a clearer message
+    if (errorText.includes('canvas_size is too big')) {
+      throw new Error('Image is too large to expand. Please use a smaller image (max ~5000x5000 pixels).');
+    }
+    
+    throw new Error(`Image expansion failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: data.result?.seed
+  };
+}
+
+/**
+ * Increase image resolution (upscale)
+ */
+export async function upscaleImage(
+  image: string,
+  factor: 2 | 4 = 2,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/increase_resolution`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      desired_increase: factor,
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Upscale error:', errorText);
+    throw new Error(`Image upscale failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: undefined
+  };
+}
+
+/**
+ * Enhance image quality with AI (improves details, sharpness, clarity)
+ * Unlike upscale, this regenerates the image with enhanced quality
+ */
+export async function enhanceImage(
+  image: string,
+  resolution: '1MP' | '2MP' | '4MP' = '2MP',
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/enhance`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      resolution: resolution,
+      steps_num: 20,
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Enhance error:', errorText);
+    throw new Error(`Image enhance failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: data.result?.seed
+  };
+}
+
+/**
+ * Erase elements from image (fill with background)
+ */
+export async function eraseElements(
+  image: string,
+  mask: string,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    console.log('No BRIA_API_TOKEN - returning mock response');
+    return { imageUrl: image, seed: undefined };
+  }
+
+  const rawBase64 = stripDataUrl(image);
+  const rawMask = stripDataUrl(mask);
+  
+  const response = await fetch(`${BRIA_EDIT_BASE}/erase`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      image: rawBase64,
+      mask: rawMask,
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Erase error:', errorText);
+    throw new Error(`Erase elements failed: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url || data.result_url,
+    seed: undefined
+  };
+}
+
+/**
+ * Generate HD image (1920x1080)
+ */
+export async function generateHDImage(
+  prompt: string,
+  apiToken?: string
+): Promise<GenerateResponse> {
+  if (!apiToken) {
+    return mockGenerateResponse({ lighting: 'natural', composition: 'centered', realism_level: 'high', output_format: 'hdr_16bit', camera: { yaw: 0, pitch: 0, roll: 0, fov: 50 } });
+  }
+  
+  const response = await fetch(`${BRIA_API_BASE}/image/generate/hd`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api_token': apiToken
+    },
+    body: JSON.stringify({
+      prompt: prompt,
+      aspect_ratio: '16:9',
+      sync: true
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`HD generation failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  return {
+    imageUrl: data.result?.image_url,
+    seed: data.result?.seed
+  };
+}
+
+/**
  * Convert our simplified FIBO params to Bria's structured prompt format
  */
 export function paramsToStructuredPrompt(

@@ -16,7 +16,20 @@ export interface FIBOParams {
   edit_mode?: string;         // "mask" when user draws a region, "full" for full image
   subject_description?: string; // Description of what to add/change
   realism_level: string;      // "high", "medium", "stylized"
-  output_format: string;      // "hdr_16bit", "sdr_8bit"
+  output_format: string;      // "hdr_16bit", "sdr_8bit", "png", "jpeg"
+  // HDR/16-bit settings
+  hdr_enabled?: boolean;      // Enable HDR output
+  bit_depth?: '8bit' | '16bit'; // Color depth
+  // Image expansion settings
+  expand_direction?: 'left' | 'right' | 'up' | 'down' | 'all';
+  expand_amount?: number;     // Percentage to expand (10-100)
+  // Upscale settings
+  upscale_factor?: 2 | 4;     // Upscale multiplier
+  // HDR enhance settings
+  hdr_resolution?: '1MP' | '2MP' | '4MP';  // Target resolution for HDR enhance
+  // Background settings
+  blur_intensity?: number;    // Background blur intensity (0-100)
+  new_background?: string;    // Prompt for new background
 }
 
 // Default state for new sessions
@@ -25,7 +38,9 @@ export const DEFAULT_FIBO_PARAMS: FIBOParams = {
   lighting: "studio_soft",
   composition: "centered",
   realism_level: "high",
-  output_format: "hdr_16bit"
+  output_format: "hdr_16bit",
+  hdr_enabled: true,
+  bit_depth: '16bit'
 };
 
 // Bria FIBO API structured prompt format
@@ -66,12 +81,20 @@ export interface AgentRequest {
 
 // Operation types detected by the agent
 export type OperationType = 
-  | 'inpaint_remove'    // Remove something from masked area
-  | 'inpaint_replace'   // Replace something in masked area
-  | 'inpaint_add'       // Add something to masked area
-  | 'style_transfer'    // Change style/mood of whole image
-  | 'generate_new'      // Generate completely new image
-  | 'camera_adjust';    // Only camera/composition changes
+  | 'inpaint_remove'      // Remove something from masked area
+  | 'inpaint_replace'     // Replace something in masked area
+  | 'inpaint_add'         // Add something to masked area
+  | 'style_transfer'      // Change style/mood of whole image
+  | 'generate_new'        // Generate completely new image
+  | 'camera_adjust'       // Only camera/composition changes
+  | 'background_remove'   // Remove background (transparent)
+  | 'background_blur'     // Blur background (depth of field)
+  | 'background_replace'  // Replace background with new one
+  | 'image_expand'        // Expand image boundaries (outpainting)
+  | 'image_upscale'       // Increase resolution
+  | 'hdr_enhance'         // HDR/AI enhance image quality
+  | 'erase_element'       // Erase and fill with background
+  | 'combine_images';     // Combine two images
 
 export interface AgentResponse {
   operation?: OperationType;  // Detected operation type
