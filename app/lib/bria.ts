@@ -7,6 +7,46 @@ const BRIA_API_BASE = 'https://engine.prod.bria-api.com/v2';
 const BRIA_EDIT_BASE = 'https://engine.prod.bria-api.com/v2/image/edit';
 
 /**
+ * Poll Bria status endpoint until job completes
+ */
+async function pollForCompletion(
+  statusUrl: string,
+  apiToken: string,
+  maxAttempts: number = 60,
+  intervalMs: number = 2000
+): Promise<GenerateResponse> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const response = await fetch(statusUrl, {
+      headers: { 'api_token': apiToken }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Status check failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log(`Status check (${attempt + 1}/${maxAttempts}):`, data.status);
+
+    if (data.status === 'COMPLETED') {
+      return {
+        imageUrl: data.result.image_url,
+        seed: data.result.seed,
+        structuredPrompt: undefined
+      };
+    }
+
+    if (data.status === 'ERROR' || data.status === 'FAILED') {
+      throw new Error(data.error?.message || 'Generation failed');
+    }
+
+    // Wait before next poll
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('Generation timeout - exceeded max polling attempts');
+}
+
+/**
  * Strip data URL prefix to get raw base64
  */
 function stripDataUrl(dataUrl: string): string {
@@ -507,9 +547,9 @@ async function generateWithGenFill(
     image: rawImageBase64,
     mask: rawMaskBase64,
     prompt: prompt,
-    sync: true,
     version: 2,  // Better quality
     mask_type: 'manual'
+    // Note: sync is false by default (async mode)
   };
 
   console.log('Sending to Bria gen_fill API:', {
@@ -542,6 +582,14 @@ async function generateWithGenFill(
     }
 
     const data = await response.json();
+    
+    // API returns 202 with status_url for async requests
+    if (data.status_url) {
+      console.log('Bria gen_fill started, polling for completion:', data.request_id);
+      return await pollForCompletion(data.status_url, apiToken);
+    }
+    
+    // If sync response (shouldn't happen with sync=false)
     console.log('Bria gen_fill API success:', { 
       hasImageUrl: !!data.result?.image_url,
       requestId: data.request_id
